@@ -1,6 +1,7 @@
 package jj
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -405,80 +406,60 @@ func TestSyncWith_Scenario15_ConflictedRemoteAgreesOneSide(t *testing.T) {
 	}
 }
 
-// --- slugify tests ---
+// --- PlanBookmarks generated-name tests ---
 
-func TestSlugify_ConventionalPrefix(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"feat: add auth module", "add-auth-module"},
-		{"fix: handle nil pointer", "handle-nil-pointer"},
-		{"refactor(auth): extract token", "extract-token"},
-		{"docs: update README", "update-readme"},
-		{"feat!: breaking change", "breaking-change"},
+func TestPlanBookmarks_UsesGeneratedName(t *testing.T) {
+	dag := &ChangeDAG{Changes: []*Change{{ChangeID: "xa", CommitID: "c1", Description: "feat: a"}}}
+	got, err := PlanBookmarks(dag, nil, map[string]string{"c1": "custom/a"}, "origin", nil, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		got := slugify(tt.input)
-		if got != tt.want {
-			t.Errorf("slugify(%q) = %q, want %q", tt.input, got, tt.want)
+	if len(got) != 1 || got[0].Bookmark != "custom/a" || !got[0].IsNew {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestPlanBookmarks_MissingGeneratedName(t *testing.T) {
+	dag := &ChangeDAG{Changes: []*Change{{ChangeID: "xa", CommitID: "c1", Description: "feat: a"}}}
+	_, err := PlanBookmarks(dag, nil, nil, "origin", nil, nil, true, false)
+	if err == nil || !strings.Contains(err.Error(), "no generated bookmark name") {
+		t.Fatalf("expected missing-name error, got %v", err)
+	}
+}
+
+func TestPlanBookmarks_ExistingBookmarkNeedsNoGeneratedName(t *testing.T) {
+	dag := &ChangeDAG{Changes: []*Change{{ChangeID: "xa", CommitID: "c1"}}}
+	bookmarks := []BookmarkInfo{{Name: "mine", Present: true, Target: "c1", Remotes: map[string]RemoteBookmarkState{}}}
+	got, err := PlanBookmarks(dag, bookmarks, nil, "origin", nil, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Bookmark != "mine" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestPlanBookmarks_DuplicateGeneratedName(t *testing.T) {
+	dag := &ChangeDAG{Changes: []*Change{
+		{ChangeID: "xa", CommitID: "c1", Description: "feat: a"},
+		{ChangeID: "xb", CommitID: "c2", Description: "feat: b"},
+	}}
+	_, err := PlanBookmarks(dag, nil, map[string]string{"c1": "same", "c2": "same"}, "origin", nil, nil, true, false)
+	if err == nil || !strings.Contains(err.Error(), `generated bookmark "same" is also generated for xa`) {
+		t.Fatalf("expected duplicate-name error, got %v", err)
+	}
+}
+
+func TestValidateGeneratedName(t *testing.T) {
+	for _, name := range []string{"", "has space", "tab\there", "new\nline", "bell\a"} {
+		if err := validateGeneratedName(name); err == nil {
+			t.Errorf("validateGeneratedName(%q) = nil, want error", name)
 		}
 	}
-}
-
-func TestSlugify_SpecialCharacters(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"hello world", "hello-world"},
-		{"Hello  World!", "hello-world"},
-		{"one/two/three", "one-two-three"},
-		{"CamelCase", "camelcase"},
-		{"dots.and.dashes-here", "dots-and-dashes-here"},
-		{"  leading trailing  ", "leading-trailing"},
-	}
-	for _, tt := range tests {
-		got := slugify(tt.input)
-		if got != tt.want {
-			t.Errorf("slugify(%q) = %q, want %q", tt.input, got, tt.want)
+	for _, name := range []string{"jip/a/b", "feature/TASK-1", "x"} {
+		if err := validateGeneratedName(name); err != nil {
+			t.Errorf("validateGeneratedName(%q) = %v, want nil", name, err)
 		}
-	}
-}
-
-func TestSlugify_Empty(t *testing.T) {
-	if got := slugify(""); got != "" {
-		t.Errorf("slugify(\"\") = %q, want empty", got)
-	}
-}
-
-func TestSlugify_Truncation(t *testing.T) {
-	long := "this is a very long commit description that should be truncated at a reasonable length"
-	got := slugify(long)
-	if len(got) > maxSlugLen {
-		t.Errorf("slugify result too long: %d > %d: %q", len(got), maxSlugLen, got)
-	}
-	// Should truncate at a word boundary.
-	if got[len(got)-1] == '-' {
-		t.Errorf("slug should not end with hyphen: %q", got)
-	}
-}
-
-// --- GenerateBookmarkName tests ---
-
-func TestGenerateBookmarkName_Basic(t *testing.T) {
-	name := GenerateBookmarkName("feat: add auth module", "xyzklmno")
-	want := "jip/add-auth-module/xyzklmno"
-	if name != want {
-		t.Errorf("got %q, want %q", name, want)
-	}
-}
-
-func TestGenerateBookmarkName_EmptyDescription(t *testing.T) {
-	name := GenerateBookmarkName("", "abc12345")
-	want := "jip/change/abc12345"
-	if name != want {
-		t.Errorf("got %q, want %q", name, want)
 	}
 }
 

@@ -274,7 +274,7 @@ func TestIntegration_SendExistingSkipsExcludedGeneratedBookmark(t *testing.T) {
 	repo, _ := initTestRepoWithRemote(t)
 	writeAndCommit(t, repo, "a.go", "package a", "feat: feature")
 	id := getChangeID(t, repo, "@-")
-	name := jj.GenerateBookmarkName("feat: feature", id[:8])
+	name := "jip/feature/" + id[:8]
 	jjRun(t, repo, "bookmark", "set", name, "-r", "@-")
 	for _, expression := range []string{"false", `name.starts_with("jip/")`} {
 		t.Run(expression, func(t *testing.T) {
@@ -290,5 +290,68 @@ func TestIntegration_SendExistingSkipsExcludedGeneratedBookmark(t *testing.T) {
 				t.Fatalf("unexpected result: %s", out.String())
 			}
 		})
+	}
+}
+
+func TestIntegration_SendBookmarkTemplate(t *testing.T) {
+	checkJJ(t)
+	repo, _ := initTestRepoWithRemote(t)
+	runner := jj.NewRunner(repo)
+	writeAndCommit(t, repo, "a.go", "package a", "feat: first")
+	writeAndCommit(t, repo, "b.go", "package b", "feat: second")
+	first, second := getChangeID(t, repo, "@--"), getChangeID(t, repo, "@-")
+
+	// The default keeps the historical jip/<slug>/<short-change-id> names.
+	var out bytes.Buffer
+	if err := executeSend(runner, newMockService(), sendOpts{base: "main", remote: "origin", revsets: []string{"@-"}, dryRun: true}, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"jip/first/` + first[:8] + `"`, `"jip/second/` + second[:8] + `"`} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %s:\n%s", want, out.String())
+		}
+	}
+
+	// A custom template replaces the generated names.
+	out.Reset()
+	tmpl := `"me/" ++ description.first_line().remove_prefix("feat: ") ++ "-" ++ change_id.short(4)`
+	mock := newMockService()
+	if err := executeSend(runner, mock, sendOpts{base: "main", remote: "origin", revsets: []string{"@-"}, bookmarkTemplate: tmpl}, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"me/first-" + first[:4], "me/second-" + second[:4]} {
+		found := false
+		for _, pr := range mock.prs {
+			found = found || pr.HeadRefName == want
+		}
+		if !found {
+			t.Errorf("no PR with head %q", want)
+		}
+	}
+}
+
+func TestIntegration_SendBookmarkTemplateErrors(t *testing.T) {
+	checkJJ(t)
+	repo, _ := initTestRepoWithRemote(t)
+	runner := jj.NewRunner(repo)
+	writeAndCommit(t, repo, "a.go", "package a", "feat: first")
+	writeAndCommit(t, repo, "b.go", "package b", "feat: second")
+	before, _ := runner.BookmarkList()
+
+	for _, tc := range []struct{ tmpl, want string }{
+		{"not_a_keyword", "evaluating bookmark-template"},
+		{`"same"`, `generated bookmark "same" is also generated for`},
+		{`"has space"`, "whitespace"},
+	} {
+		t.Run(tc.tmpl, func(t *testing.T) {
+			var out bytes.Buffer
+			err := executeSend(runner, newMockService(), sendOpts{base: "main", remote: "origin", revsets: []string{"@-"}, bookmarkTemplate: tc.tmpl}, &out)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+		})
+	}
+	if after, _ := runner.BookmarkList(); !bytes.Equal(before, after) {
+		t.Fatal("a failed template must not create bookmarks")
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 )
@@ -222,9 +221,14 @@ func sortByPriority(bs []*BookmarkInfo, priority func(string) int) {
 
 // PlanBookmarks assigns bookmarks without changing the repository. A tie at
 // the highest priority is an error. All assignment errors are reported together.
+//
+// names maps a commit ID to the bookmark name generated for it (see
+// Runner.BookmarkNames). It is consulted only for changes without a usable
+// existing bookmark; a missing entry for such a change is an error.
 func PlanBookmarks(
 	dag *ChangeDAG,
 	bookmarks []BookmarkInfo,
+	names map[string]string,
 	pushRemote string,
 	shouldUseExisting func(changeID, bookmark string) bool,
 	priority func(bookmark string) int,
@@ -242,6 +246,7 @@ func PlanBookmarks(
 
 	var result []ChangeBookmark
 	var problems []string
+	generatedBy := make(map[string]string) // generated name → change ID
 	for _, change := range dag.Changes {
 		existing := matched[change.ChangeID]
 
@@ -282,14 +287,19 @@ func PlanBookmarks(
 			continue
 		}
 
-		// No existing bookmark matched by commit ID. Generate the name and
+		// No existing bookmark matched by commit ID. Use the generated name and
 		// check if a bookmark with that name already exists (can happen when
 		// a fetch fast-forwarded the bookmark to a remote commit).
-		shortID := change.ChangeID
-		if len(shortID) > 8 {
-			shortID = shortID[:8]
+		name, ok := names[change.CommitID]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("%.12s (%s): no generated bookmark name", change.ChangeID, change.Title()))
+			continue
 		}
-		name := GenerateBookmarkName(change.Description, shortID)
+		if other, dup := generatedBy[name]; dup && other != change.ChangeID {
+			problems = append(problems, fmt.Sprintf("%.12s (%s): generated bookmark %q is also generated for %.12s; make bookmark-template produce unique names", change.ChangeID, change.Title(), name, other))
+			continue
+		}
+		generatedBy[name] = change.ChangeID
 
 		if bi, exists := bookmarkByName[name]; exists {
 			if shouldUseExisting != nil && !shouldUseExisting(change.ChangeID, name) {
@@ -335,8 +345,8 @@ func PlanBookmarks(
 
 // EnsureBookmarks is the plan-and-apply entry point for callers that do not
 // need a separate preflight phase.
-func EnsureBookmarks(runner Runner, dag *ChangeDAG, bookmarks []BookmarkInfo, pushRemote string, shouldUseExisting func(string, string) bool, priority func(string) int, createNew bool) ([]ChangeBookmark, error) {
-	plan, err := PlanBookmarks(dag, bookmarks, pushRemote, shouldUseExisting, priority, createNew, false)
+func EnsureBookmarks(runner Runner, dag *ChangeDAG, bookmarks []BookmarkInfo, names map[string]string, pushRemote string, shouldUseExisting func(string, string) bool, priority func(string) int, createNew bool) ([]ChangeBookmark, error) {
+	plan, err := PlanBookmarks(dag, bookmarks, names, pushRemote, shouldUseExisting, priority, createNew, false)
 	if err != nil {
 		return nil, err
 	}
@@ -350,40 +360,25 @@ func EnsureBookmarks(runner Runner, dag *ChangeDAG, bookmarks []BookmarkInfo, pu
 	return plan, nil
 }
 
-// GenerateBookmarkName creates a bookmark name following the jip convention:
-// jip/<slugified-description>/<short-change-id>
-func GenerateBookmarkName(description, shortChangeID string) string {
-	slug := slugify(description)
-	if slug == "" {
-		slug = "change"
-	}
-	return fmt.Sprintf("jip/%s/%s", slug, shortChangeID)
-}
-
-// conventionalPrefixRe matches conventional commit prefixes like "feat:", "fix(scope):", etc.
-var conventionalPrefixRe = regexp.MustCompile(`^[a-zA-Z]+(\([^)]*\))?!?:\s*`)
-
-// nonAlnumRe matches runs of non-alphanumeric characters.
-var nonAlnumRe = regexp.MustCompile(`[^a-z0-9]+`)
-
-const maxSlugLen = 30
-
-// slugify converts a commit description into a bookmark-safe slug.
-// It strips conventional commit prefixes, lowercases, replaces non-alphanumeric
-// characters with hyphens, and truncates to maxSlugLen.
-func slugify(s string) string {
-	// Strip conventional commit prefix.
-	s = conventionalPrefixRe.ReplaceAllString(s, "")
-	s = strings.ToLower(s)
-	s = nonAlnumRe.ReplaceAllString(s, "-")
-	s = strings.Trim(s, "-")
-
-	// Truncate at word boundary if possible.
-	if len(s) > maxSlugLen {
-		s = s[:maxSlugLen]
-		if i := strings.LastIndex(s, "-"); i > maxSlugLen/2 {
-			s = s[:i]
-		}
-	}
-	return s
-}
+// DefaultBookmarkTemplate is the jj commit template used to generate names
+// for changes without a bookmark: jip/<description-slug>/<short-change-id>.
+//
+// The slug strips a conventional-commit prefix ("feat(x)!: "), lowercases,
+// collapses runs of non-[a-z0-9] characters into "-", trims "-" from both
+// ends, and truncates to 30 characters, backing up to the last "-" when it
+// lies past the 15th character. An empty slug becomes "change". The "~"
+// marks a truncated slug so the word-boundary step only applies then; it
+// cannot otherwise occur because only [a-z0-9-] remains at that point.
+// U+0130 (İ) is mapped to "i" first: jj lowercases it to "i" plus a combining
+// dot, whereas the original Go implementation produced a plain "i".
+const DefaultBookmarkTemplate = `"jip/" ++ coalesce(` +
+	`description` +
+	`.replace(regex:'^[a-zA-Z]+(\([^)]*\))?!?:\s*', "", 1)` +
+	`.replace("İ", "i")` +
+	`.lower()` +
+	`.replace(regex:'[^a-z0-9]+', "-")` +
+	`.replace(regex:'^-+|-+$', "")` +
+	`.replace(regex:'^(.{30}).+$', "$1~")` +
+	`.replace(regex:'^(.{16,})-[^-]*~$', "$1")` +
+	`.remove_suffix("~"), ` +
+	`"change") ++ "/" ++ change_id.short(8)`

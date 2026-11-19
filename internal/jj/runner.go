@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"unicode"
 
 	"github.com/omarkohl/jip/internal/retry"
 )
@@ -49,6 +50,10 @@ type Runner interface {
 
 	// ExcludedBookmarks evaluates a boolean jj bookmark-template expression.
 	ExcludedBookmarks(expression string) (map[string]bool, error)
+
+	// BookmarkNames evaluates a jj commit template for each given commit ID
+	// and returns commit ID → generated bookmark name.
+	BookmarkNames(commitIDs []string, template string) (map[string]string, error)
 
 	// BookmarkSet creates or moves a bookmark to the given revision.
 	BookmarkSet(name, rev string) error
@@ -195,6 +200,58 @@ func (r *realRunner) ExcludedBookmarks(expression string) (map[string]bool, erro
 		result[name] = true
 	}
 	return result, nil
+}
+
+func (r *realRunner) BookmarkNames(commitIDs []string, template string) (map[string]string, error) {
+	result := make(map[string]string, len(commitIDs))
+	if len(commitIDs) == 0 {
+		return result, nil
+	}
+	revs := make([]string, len(commitIDs))
+	for i, id := range commitIDs {
+		revs[i] = "commit_id(" + id + ")"
+	}
+	// stringify() lets the template be any stringifiable expression, and
+	// json() keeps names containing newlines or quotes parseable so they can
+	// be rejected with a clear error instead of being silently split.
+	tmpl := `json(commit_id) ++ " " ++ json(stringify(` + template + "\n" + `)) ++ "\n"`
+	args := []string{"log", "--no-graph", "--quiet", "-R", r.repoDir, "-r", strings.Join(revs, "|"), "-T", tmpl}
+	logCmd("jj", args)
+	cmd := exec.Command("jj", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("evaluating bookmark-template: %w\n%s", err, strings.TrimSpace(stderr.String()))
+	}
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var id, name string
+		if err := dec.Decode(&id); err != nil {
+			return nil, fmt.Errorf("parsing bookmark-template output: %w", err)
+		}
+		if err := dec.Decode(&name); err != nil {
+			return nil, fmt.Errorf("parsing bookmark-template output: %w", err)
+		}
+		name = strings.TrimSpace(name)
+		if err := validateGeneratedName(name); err != nil {
+			return nil, fmt.Errorf("bookmark-template for commit %.12s: %w", id, err)
+		}
+		result[id] = name
+	}
+	return result, nil
+}
+
+// validateGeneratedName rejects names that are clearly unusable as bookmarks.
+// Anything subtler is left to jj bookmark set, which reports its own errors.
+func validateGeneratedName(name string) error {
+	if name == "" {
+		return fmt.Errorf("produced an empty bookmark name")
+	}
+	if i := strings.IndexFunc(name, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }); i >= 0 {
+		return fmt.Errorf("produced bookmark name %q containing whitespace or control characters", name)
+	}
+	return nil
 }
 
 func (r *realRunner) GitRemoteList() ([]byte, error) {

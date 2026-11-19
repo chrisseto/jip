@@ -322,7 +322,7 @@ func TestIntegration_BookmarkCreation(t *testing.T) {
 	}
 
 	// EnsureBookmarks should create new bookmarks.
-	results, err := EnsureBookmarks(runner, dags[0], bookmarks, "origin", nil, nil, true)
+	results, err := EnsureBookmarks(runner, dags[0], bookmarks, defaultNames(t, runner, dags[0]), "origin", nil, nil, true)
 	if err != nil {
 		t.Fatalf("EnsureBookmarks: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestIntegration_BookmarkReuse(t *testing.T) {
 	}
 
 	// shouldUseExisting always returns true → reuse existing bookmark.
-	results, err := EnsureBookmarks(runner, dags[0], bookmarks, "origin",
+	results, err := EnsureBookmarks(runner, dags[0], bookmarks, defaultNames(t, runner, dags[0]), "origin",
 		func(changeID, bookmark string) bool { return true }, nil, true)
 	if err != nil {
 		t.Fatalf("EnsureBookmarks: %v", err)
@@ -421,7 +421,7 @@ func TestIntegration_BookmarkSelectiveReuse(t *testing.T) {
 	}
 
 	// shouldUseExisting rejects non-jip bookmarks → should create a new one.
-	results, err := EnsureBookmarks(runner, dags[0], bookmarks, "origin",
+	results, err := EnsureBookmarks(runner, dags[0], bookmarks, defaultNames(t, runner, dags[0]), "origin",
 		func(changeID, bookmark string) bool {
 			return strings.HasPrefix(bookmark, "jip/")
 		}, nil, true)
@@ -515,7 +515,7 @@ func TestIntegration_BookmarkPrefersExistingPR(t *testing.T) {
 		t.Fatalf("ParseBookmarkList: %v", err)
 	}
 
-	results, err := EnsureBookmarks(runner, dags[0], bookmarks, "origin",
+	results, err := EnsureBookmarks(runner, dags[0], bookmarks, defaultNames(t, runner, dags[0]), "origin",
 		func(changeID, bookmark string) bool { return true },
 		func(bookmark string) int {
 			if bookmark == "zzz-with-pr" {
@@ -551,8 +551,22 @@ func TestIntegration_BookmarkTieRequiresChoice(t *testing.T) {
 		t.Fatalf("ParseBookmarkList: %v", err)
 	}
 
-	_, err = EnsureBookmarks(runner, dags[0], bookmarks, "origin", nil, nil, true)
+	_, err = EnsureBookmarks(runner, dags[0], bookmarks, defaultNames(t, runner, dags[0]), "origin", nil, nil, true)
 	if err == nil || !strings.Contains(err.Error(), "ambiguous bookmarks: apple, banana, Cherry") {
 		t.Fatalf("expected an actionable ambiguity error, got %v", err)
 	}
+}
+
+// defaultNames evaluates DefaultBookmarkTemplate for every change in dag.
+func defaultNames(t *testing.T, runner Runner, dag *ChangeDAG) map[string]string {
+	t.Helper()
+	var ids []string
+	for _, c := range dag.Changes {
+		ids = append(ids, c.CommitID)
+	}
+	names, err := runner.BookmarkNames(ids, DefaultBookmarkTemplate)
+	if err != nil {
+		t.Fatalf("BookmarkNames: %v", err)
+	}
+	return names
 }

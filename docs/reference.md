@@ -27,6 +27,7 @@ Global flags:
 | `--remote` | | `origin` | Push remote name |
 | `--bookmark-policy` | | `auto` | `auto`: reuse eligible bookmarks and generate missing names; `require`: never generate names |
 | `--exclude-bookmarks` | | `normal_target.immutable()` | Boolean jj bookmark-template expression selecting bookmarks that must not be used |
+| `--bookmark-template` | | `jip/<slug>/<change-id>` | jj commit template that generates names for changes without a bookmark (see [Branch naming](#branch-naming-and-bookmark-selection)) |
 | `--upstream` | `-u` | | Upstream remote name or URL (where PRs are opened). Bare `--upstream` means the `upstream` remote; pass a value with `=` (`--upstream=fork`) |
 | `--dry-run` | `-n` | | Show what would happen without making changes |
 | `--reviewer` | `-r` | | Add reviewers (repeatable, comma-separated) |
@@ -65,7 +66,7 @@ from a team default without dirtying the committed `.jip.toml`. **Add
 `.jip.local.toml` to your `.gitignore`** — jip does not do this for you.
 
 Keys mirror the `send` flag names: `base`, `remote`, `upstream`, `draft`,
-`bookmark-policy`, `exclude-bookmarks`,
+`bookmark-policy`, `exclude-bookmarks`, `bookmark-template`,
 `stack`, `no-stack`, `rebase`, `diff-since-jip`, `reviewer`,
 `no-change-comment`.
 Per-invocation flags (`--dry-run`, `--existing`) and the `--no-` cancelling
@@ -165,6 +166,24 @@ conflicted bookmarks cannot be explicitly selected; remote-qualified selections
 must agree with the local target.
 
 If no bookmark exists, `auto` generates `jip/<description-slug>/<change-id>`.
+The name comes from a jj **commit template** (the same language as
+`jj log -T`), evaluated for each change. Replace it with `bookmark-template`:
+
+```toml
+# ~/.config/jip/config.toml
+bookmark-template = '"alice/" ++ change_id.short(12)'
+# Or reuse an alias from your jj config's [template-aliases] table:
+# bookmark-template = 'my_bookmark_name'
+```
+
+The output is trimmed and must be non-empty, without whitespace or control
+characters; every change in a send must get a distinct name, so include
+`change_id` in custom templates. Invalid templates stop the send before any
+bookmark is created. The default reproduces jip's historical naming: strip a
+conventional-commit prefix, lowercase, replace runs of other characters with
+`-`, truncate to 30 characters at a word boundary, and append
+`change_id.short(8)`.
+
 Projects that require developer-supplied names can prohibit generation:
 
 ```toml

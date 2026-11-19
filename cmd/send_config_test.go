@@ -279,6 +279,7 @@ func TestBookmarkConfig(t *testing.T) {
 	if err := applySendConfig(flags, map[string]string{
 		"bookmark-policy":   "require",
 		"exclude-bookmarks": `normal_target.immutable() || name.starts_with("release/")`,
+		"bookmark-template": `"me/" ++ change_id.short(12)`,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -287,6 +288,9 @@ func TestBookmarkConfig(t *testing.T) {
 	}
 	if got, _ := flags.GetString("exclude-bookmarks"); !strings.Contains(got, "release/") {
 		t.Fatalf("exclusion = %q", got)
+	}
+	if got, _ := flags.GetString("bookmark-template"); got != `"me/" ++ change_id.short(12)` {
+		t.Fatalf("template = %q", got)
 	}
 	if err := flags.Set("bookmark-policy", "auto"); err != nil {
 		t.Fatal(err)

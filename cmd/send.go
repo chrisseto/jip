@@ -38,6 +38,7 @@ func init() {
 	sendCmd.Flags().String("remote", "origin", "Push remote name")
 	sendCmd.Flags().String("bookmark-policy", "auto", "Bookmark naming: auto (generate missing names) or require (existing bookmarks only)")
 	sendCmd.Flags().String("exclude-bookmarks", defaultExcludeBookmarks, "Boolean jj bookmark-template expression for bookmarks that must not be used")
+	sendCmd.Flags().String("bookmark-template", jj.DefaultBookmarkTemplate, "jj commit template that generates names for changes without a bookmark")
 	sendCmd.Flags().StringP("upstream", "u", "", "Upstream remote name or URL (use --upstream=value); bare --upstream means the \"upstream\" remote")
 	sendCmd.Flags().Lookup("upstream").NoOptDefVal = "upstream"
 	sendCmd.Flags().BoolP("dry-run", "n", false, "Show what would happen without making changes")
@@ -77,6 +78,7 @@ const (
 var sendConfigKeys = map[string]bool{
 	"bookmark-policy":   true,
 	"exclude-bookmarks": true,
+	"bookmark-template": true,
 	"base":              true,
 	"remote":            true,
 	"upstream":          true,
@@ -192,6 +194,7 @@ func resolveStackMode(stack string, stackSet, noStack, noStackOnCLI bool) (strin
 type sendOpts struct {
 	bookmarkPolicy   string
 	excludeBookmarks string
+	bookmarkTemplate string
 	base             string
 	remote           string
 	upstream         string // upstream remote URL (where PRs are opened); empty = same as remote
@@ -265,6 +268,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	upstream, _ := cmd.Flags().GetString("upstream")
 	bookmarkPolicy, _ := cmd.Flags().GetString("bookmark-policy")
 	excludeBookmarks, _ := cmd.Flags().GetString("exclude-bookmarks")
+	bookmarkTemplate, _ := cmd.Flags().GetString("bookmark-template")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	reviewers, _ := cmd.Flags().GetStringSlice("reviewer")
 	// Trim whitespace from each reviewer (e.g. "-r alice, bob").
@@ -361,6 +365,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	return executeSend(runner, client, sendOpts{
 		bookmarkPolicy:   bookmarkPolicy,
 		excludeBookmarks: excludeBookmarks,
+		bookmarkTemplate: bookmarkTemplate,
 		base:             base,
 		remote:           remote,
 		upstream:         upstream,
@@ -409,6 +414,9 @@ func executeSend(runner jj.Runner, client gh.Service, opts sendOpts, w io.Writer
 	}
 	if opts.excludeBookmarks == "" {
 		opts.excludeBookmarks = defaultExcludeBookmarks
+	}
+	if opts.bookmarkTemplate == "" {
+		opts.bookmarkTemplate = jj.DefaultBookmarkTemplate
 	}
 	if opts.dryRun {
 		if opts.rebase {
@@ -637,6 +645,22 @@ func executeFetchedSend(runner jj.Runner, client gh.Service, opts sendOpts, w io
 	}
 	var assignmentErrors []string
 
+	// Generate candidate names for every change in one jj call. Names are
+	// needed only for changes without a usable bookmark, but evaluating all
+	// of them keeps this a single invocation. Even under the require policy
+	// the generated name is used to find a previously generated bookmark
+	// that a fetch moved off the change.
+	var commitIDs []string
+	for _, dag := range dags {
+		for _, change := range dag.Changes {
+			commitIDs = append(commitIDs, change.CommitID)
+		}
+	}
+	generatedNames, err := runner.BookmarkNames(commitIDs, opts.bookmarkTemplate)
+	if err != nil {
+		return err
+	}
+
 	for _, dag := range dags {
 		// All eligible local bookmarks may be reused. Explicit choices win,
 		// followed by an existing PR; ties require a user choice.
@@ -654,7 +678,7 @@ func executeFetchedSend(runner jj.Runner, client gh.Service, opts sendOpts, w io
 			return 0
 		}
 
-		results, err := jj.PlanBookmarks(dag, bookmarks, opts.remote, shouldUse, priority, !opts.existing, opts.bookmarkPolicy == "require")
+		results, err := jj.PlanBookmarks(dag, bookmarks, generatedNames, opts.remote, shouldUse, priority, !opts.existing, opts.bookmarkPolicy == "require")
 		if err != nil {
 			assignmentErrors = append(assignmentErrors, err.Error())
 			continue
